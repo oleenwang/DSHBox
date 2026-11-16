@@ -1,0 +1,51 @@
+name: Probe APK (build only)
+
+# 只做「打包 + 上传」，不跑单测/lint/发布流水线。
+# 目的：上游 android.yml 在 assemble 之前有 i18n 检查、隐私审计、单元测试、
+# lint 等 6 个步骤，其中单元测试存在与本改动无关的偶发失败（端口占用等），
+# 会把 APK 挡在后面。本工作流用于快速产出可安装的探针包。
+on:
+  push:
+    branches: [probe-build]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Accept licenses & install SDK packages
+        run: |
+          sdkmanager --update >/dev/null 2>&1 || true
+          yes | sdkmanager --licenses >/dev/null 2>&1
+          sdkmanager "platforms;android-36" "platforms;android-37.2" "build-tools;36.0.0" "platform-tools"
+
+      - name: Grant execute permission to scripts
+        run: chmod +x gradlew tools/*.sh runtime-bundle/scripts/*.sh runtime-bundle/build_rootfs.sh
+
+      - name: Assemble System WebView debug APK
+        run: ./gradlew :app:assembleSystemWebViewDebug --stacktrace
+
+      - name: Upload probe APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-apk
+          path: app/build/outputs/apk/systemWebView/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
