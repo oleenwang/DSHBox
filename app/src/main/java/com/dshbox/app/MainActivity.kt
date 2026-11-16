@@ -33,10 +33,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        com.dshbox.app.sandbox.NativeAccelerationProbe.log()
-        com.dshbox.app.sandbox.QnnProbe.run(this)
-        com.dshbox.app.sandbox.LiteRtLmProbe.run(this)
-        com.dshbox.app.sandbox.LocalInferServer.start(this)
+        // NPU 可达性探针：一次性逐级验证 App 域到 cDSP 的路径（见 NpuReachabilityProbe）。
+        Thread { com.dshbox.app.sandbox.NpuReachabilityProbe.run() }.start()
         consumeBrowserRoute(intent)
         // 配置变更（如应用内切换语言）与进程恢复会带着同一个启动意图重建本页：
         // 系统侧的意图是独立副本，清本地字段挡不住它，故用已消费标记兜底，避免重复导入同一批。
