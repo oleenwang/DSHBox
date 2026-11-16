@@ -1,5 +1,6 @@
 package com.dshbox.app.sandbox
 
+import android.content.Context
 import android.util.Log
 import java.io.File
 
@@ -29,7 +30,7 @@ object NpuReachabilityProbe {
     @Suppress("unused")
     private external fun runNative(): String
 
-    fun run() {
+    fun run(context: Context) {
         runCatching {
             System.loadLibrary(LIB)
             Log.i(TAG, "native lib loaded: $LIB")
@@ -53,5 +54,12 @@ object NpuReachabilityProbe {
         Log.i(TAG, "=== native probe output ===")
         out.lineSequence().filter { it.isNotBlank() }.forEach { Log.i(TAG, it) }
         Log.i(TAG, "=== end ===")
+
+        // 接着在 App 进程内拉起 Genie，验证 HTP v81 能否真正出文
+        runCatching {
+            val o = GenieNpuRunner.run(context)
+            Log.i(TAG, "=== genie output ===")
+            o.lineSequence().filter { it.isNotBlank() }.forEach { Log.i(TAG, it) }
+        }.onFailure { Log.e(TAG, "genie failed: ${it.message}") }
     }
 }
