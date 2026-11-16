@@ -34,6 +34,22 @@ static void emit(const char *fmt, ...) {
 
 typedef Qnn_ErrorHandle_t (*getprov_t)(const QnnInterface_t ***, uint32_t *);
 
+/* 只设 ADSP/DSP 库路径，不碰 QNN 设备。让 Genie 成为 DSP 的唯一使用者。 */
+const char *npu_setenv_libs(const char *native_lib_dir, const char *skel_dir) {
+    g_out[0] = 0;
+    if (native_lib_dir && *native_lib_dir) {
+        char buf[2048];
+        snprintf(buf, sizeof(buf), "%s%s%s", native_lib_dir,
+                 (skel_dir && *skel_dir) ? ";" : "", (skel_dir && *skel_dir) ? skel_dir : "");
+        setenv("ADSP_LIBRARY_PATH", buf, 1);
+        setenv("DSP_LIBRARY_PATH", buf, 1);
+        emit("[env] ADSP_LIBRARY_PATH=%s\n", buf);
+    } else {
+        emit("[env] native_lib_dir 为空，未设置\n");
+    }
+    return g_out;
+}
+
 int npu_qnn_run(const char *native_lib_dir, const char *skel_dir) {
     g_out[0] = 0;
 

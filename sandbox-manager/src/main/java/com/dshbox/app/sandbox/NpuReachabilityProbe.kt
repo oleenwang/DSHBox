@@ -25,8 +25,11 @@ object NpuReachabilityProbe {
     private const val TRACE = "npu-trace.log"
 
     @Suppress("unused") private external fun runNative(): String
+    @Suppress("unused") private external fun setenvLibs(libDir: String, skelDir: String): String
     @Suppress("unused") private external fun runQnnNative(libDir: String, skelDir: String): String
-    @Suppress("unused") private external fun runGenieNative(cfgPath: String, prompt: String): String
+    @Suppress("unused") private external fun runGenieNative(
+        cfgPath: String, prompt: String, tracePath: String,
+    ): String
 
     private fun trace(ctx: Context, msg: String) {
         Log.i(TAG, msg)
@@ -60,18 +63,27 @@ object NpuReachabilityProbe {
             .onFailure { trace(context, "[t] probe 失败: ${it.message}") }
 
         val libDir = context.applicationInfo.nativeLibraryDir
+        val tracePath = File(context.filesDir, TRACE).absolutePath
         trace(context, "[t] nativeLibraryDir=$libDir")
+        runCatching { setenvLibs(libDir, libDir) }
+            .onSuccess { traceBlock(context, "env", it) }
+            .onFailure { trace(context, "[t] setenv 失败: ${it.message}") }
+
+        // Genie 先跑：它是 DSP 的唯一使用者，避免被前面的 QNN 设备残留状态卡住
+        val cfg = File(context.filesDir, "k81/cfg32.json")
+        trace(context, "[t] 模型配置 ${cfg.absolutePath} exists=${cfg.exists()}")
+        if (cfg.exists()) {
+            trace(context, "[t] 进入 runGenieNative（每步会直接写本文件）")
+            runCatching { runGenieNative(cfg.absolutePath, "你好，用一句话介绍你自己", tracePath) }
+                .onSuccess { traceBlock(context, "genie output", it) }
+                .onFailure { trace(context, "[t] genie 失败: ${it.message}") }
+        }
+
+        // 最后做 QNN 设备创建判定（建完即释放）
         runCatching { runQnnNative(libDir, libDir) }
             .onSuccess { traceBlock(context, "qnn output", it) }
             .onFailure { trace(context, "[t] qnn 失败: ${it.message}") }
 
-        val cfg = File(context.filesDir, "k81/cfg32.json")
-        trace(context, "[t] 模型配置 ${cfg.absolutePath} exists=${cfg.exists()}")
-        if (cfg.exists()) {
-            runCatching { runGenieNative(cfg.absolutePath, "你好，用一句话介绍你自己") }
-                .onSuccess { traceBlock(context, "genie output", it) }
-                .onFailure { trace(context, "[t] genie 失败: ${it.message}") }
-        }
         trace(context, "[t] run() 结束")
     }
 }

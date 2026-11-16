@@ -5,8 +5,8 @@
  * 所以 ProcessBuilder 启动 app 私有目录里的 genie-t2t-run 必然 EACCES（error=13）。
  * 唯一可行形态是在 App 进程内 dlopen libGenie.so 并直接调 C API。
  *
- * 依赖（全部随 APK 提供）：libGenie.so / libQnnHtp.so / libQnnHtpV81Skel.so /
- * libQnnHtpV81Stub.so / libQnnSystem.so；libcdsprpc.so 走 vendor 公开库。
+ * 每一步都直接写进 trace_path（追加 + fsync），因为返回值只在函数结束时才可用，
+ * 而 Genie 建图可能耗时数十秒甚至卡住 —— 必须能中途看到进度。
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,16 +15,42 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
 
 static char g_out[65536];
-static void emit(const char *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    size_t used = strlen(g_out);
-    if (used < sizeof(g_out) - 1) vsnprintf(g_out + used, sizeof(g_out) - used - 1, fmt, ap);
-    va_end(ap);
+static char g_trace[1024];
+static const char *g_text_start;
+
+static long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
-/* Genie 的句柄都是不透明指针 */
+/* 同时进缓冲区（最终返回给 Java）和 trace 文件（实时可见） */
+static void emit(const char *fmt, ...) {
+    char line[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+
+    size_t used = strlen(g_out);
+    if (used < sizeof(g_out) - 1)
+        snprintf(g_out + used, sizeof(g_out) - used, "%s", line);
+
+    if (g_trace[0]) {
+        FILE *f = fopen(g_trace, "a");
+        if (f) {
+            fputs(line, f);
+            if (strchr(line, '\n') == NULL) fputc('\n', f);
+            fflush(f);
+            fsync(fileno(f));
+            fclose(f);
+        }
+    }
+}
+
 typedef void *cfg_h;
 typedef void *dlg_h;
 typedef int   status_t;
@@ -37,26 +63,40 @@ typedef status_t (*dlg_query_fn)(dlg_h, const char *, int, query_cb, const void 
 typedef status_t (*dlg_free_fn)(dlg_h);
 
 static int  g_tokens;
-static long g_first_ms, g_last_ms;
-static long now_ms(void) {
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
+static long g_t0, g_first, g_last;
+
+/* 正文累积到 g_out 的 "文本区"，从 g_text_start 开始 */
+static char g_text[32768];
+static size_t g_text_len;
 
 static void on_token(const char *text, int code, const void *ud) {
     (void)ud;
-    if (g_tokens == 0) g_first_ms = now_ms();
-    g_last_ms = now_ms();
+    long t = now_ms();
+    if (g_tokens == 0) g_first = t;
+    g_last = t;
     g_tokens++;
-    /* code: 0=COMPLETE 1=BEGIN 2=CONTINUE 3=END 4=ABORT 5=REWIND 6=RESUME */
-    if (text && *text) emit("%s", text);
+    if (text && *text && g_text_len + strlen(text) < sizeof(g_text) - 1) {
+        strcpy(g_text + g_text_len, text);
+        g_text_len += strlen(text);
+    }
     (void)code;
 }
 
-/* 返回 0 表示成功；结果文本累积在 g_out 的后半段 */
-static int genie_run(const char *cfg_json_path, const char *prompt) {
+int npu_genie_run(const char *cfg_json_path, const char *prompt, const char *trace_path) {
+    g_out[0] = 0;
+    g_text[0] = 0;
+    g_text_len = 0;
+    g_tokens = 0;
+    g_trace[0] = 0;
+    if (trace_path && *trace_path)
+        snprintf(g_trace, sizeof(g_trace), "%s", trace_path);
+
+    long tStart = now_ms();
+    emit("[genie] %ld 开始，配置 %s\n", tStart, cfg_json_path ? cfg_json_path : "(null)");
+
     void *lib = dlopen("libGenie.so", RTLD_NOW | RTLD_GLOBAL);
     if (!lib) { emit("[genie] dlopen libGenie.so 失败: %s\n", dlerror()); return -1; }
+    emit("[genie] +%ldms libGenie.so 已加载\n", now_ms() - tStart);
 
     cfg_from_json_fn c_from  = (cfg_from_json_fn)dlsym(lib, "GenieDialogConfig_createFromJson");
     cfg_free_fn      c_free  = (cfg_free_fn)dlsym(lib, "GenieDialogConfig_free");
@@ -64,53 +104,53 @@ static int genie_run(const char *cfg_json_path, const char *prompt) {
     dlg_query_fn     d_query = (dlg_query_fn)dlsym(lib, "GenieDialog_query");
     dlg_free_fn      d_free  = (dlg_free_fn)dlsym(lib, "GenieDialog_free");
     if (!c_from || !d_new || !d_query) {
-        emit("[genie] dlsym 缺符号: cfg=%p create=%p query=%p\n",
+        emit("[genie] dlsym 缺符号 cfg=%p create=%p query=%p\n",
              (void *)c_from, (void *)d_new, (void *)d_query);
         return -2;
     }
 
-    /* 读配置文件 */
     FILE *f = fopen(cfg_json_path, "r");
-    if (!f) { emit("[genie] 打不开配置 %s: %s\n", cfg_json_path, strerror(errno)); return -3; }
-    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (!f) { emit("[genie] 打不开配置: %s\n", strerror(errno)); return -3; }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
     char *json = malloc(n + 1);
     if (!json) { fclose(f); return -4; }
     if (fread(json, 1, n, f) != (size_t)n) { fclose(f); free(json); return -5; }
-    json[n] = 0; fclose(f);
-    emit("[genie] 配置已读入 %ld 字节\n", n);
+    json[n] = 0;
+    fclose(f);
+    emit("[genie] +%ldms 配置读入 %ld 字节\n", now_ms() - tStart, n);
 
     cfg_h cfg = NULL;
+    emit("[genie] 调用 GenieDialogConfig_createFromJson …\n");
     status_t st = c_from(json, &cfg);
     free(json);
-    emit("[genie] GenieDialogConfig_createFromJson → %d (cfg=%p)\n", st, cfg);
+    emit("[genie] +%ldms createFromJson → %d cfg=%p\n", now_ms() - tStart, st, cfg);
     if (st != 0 || !cfg) return -6;
 
     dlg_h dlg = NULL;
+    emit("[genie] 调用 GenieDialog_create（会建 QNN 图并加载权重，最耗时）…\n");
     st = d_new(cfg, &dlg);
-    emit("[genie] GenieDialog_create → %d (dlg=%p)\n", st, dlg);
+    emit("[genie] +%ldms GenieDialog_create → %d dlg=%p\n", now_ms() - tStart, st, dlg);
     if (st != 0 || !dlg) { if (c_free) c_free(cfg); return -7; }
 
-    g_tokens = 0;
-    emit("[genie] === 生成开始 ===\n");
-    long t0 = now_ms();
-    /* 单轮查询用 GENIE_DIALOG_SENTENCE_COMPLETE(=0)；
-     * SENTENCE_BEGIN(=1) 表示"接着上一句"，单独用不会触发生成。 */
-    st = d_query(dlg, prompt, 0, on_token, NULL);
-    long t1 = now_ms();
-    emit("\n[genie] GenieDialog_query → %d  回调 %d 次  总耗时 %ld ms\n", st, g_tokens, t1 - t0);
+    g_t0 = now_ms();
+    emit("[genie] 调用 GenieDialog_query …\n");
+    st = d_query(dlg, prompt, 0 /* GENIE_DIALOG_SENTENCE_COMPLETE */, on_token, NULL);
+    long tEnd = now_ms();
+    emit("[genie] +%ldms query → %d，回调 %d 次，decode 耗时 %ldms\n",
+         tEnd - tStart, st, g_tokens, tEnd - g_t0);
     if (g_tokens > 1)
-        emit("[genie] 首字 %ld ms，解码 %.1f char/s\n", g_first_ms - t0,
-             (g_tokens - 1) * 1000.0 / (double)(g_last_ms - g_first_ms > 0 ? g_last_ms - g_first_ms : 1));
+        emit("[genie] 首字 %ldms，%.1f char/s\n",
+             g_first - g_t0,
+             (g_tokens - 1) * 1000.0 / (double)(g_last - g_first > 0 ? g_last - g_first : 1));
+
+    if (g_text_len) emit("[genie] 输出正文：%s\n", g_text);
 
     if (d_free) d_free(dlg);
     if (c_free) c_free(cfg);
+    emit("[genie] 结束，退出码 %d\n", st == 0 ? 0 : -8);
     return st == 0 ? 0 : -8;
 }
 
-int npu_genie_run(const char *cfg_json_path, const char *prompt) {
-    g_out[0] = 0;
-    int r = genie_run(cfg_json_path, prompt);
-    emit("[genie] 退出码 %d\n", r);
-    return r;
-}
 const char *npu_genie_result(void) { return g_out; }
