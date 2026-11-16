@@ -54,7 +54,7 @@ object NpuReachabilityProbe {
             }
             .onFailure { Log.e(TAG, "probe failed: ${it.message}") }
 
-        // 2) 关键判定：App 域能否建成 QNN HTP 设备
+        // 2) 关键判定（同时设好 ADSP_LIBRARY_PATH；建完即释放，避免独占 DSP）：App 域能否建成 QNN HTP 设备
         val libDir = context.applicationInfo.nativeLibraryDir
         Log.i(TAG, "nativeLibraryDir=$libDir")
         runCatching { runQnnNative(libDir, libDir) }
@@ -65,7 +65,7 @@ object NpuReachabilityProbe {
             }
             .onFailure { Log.e(TAG, "qnn failed: ${it.message}") }
 
-        // 3) 进程内 Genie 推理（若模型已就位）
+        // 3) 进程内 Genie 推理（依赖上一步设好的 ADSP_LIBRARY_PATH）
         val cfg = File(context.filesDir, "k81/cfg32.json")
         if (cfg.exists()) {
             runCatching { runGenieNative(cfg.absolutePath, "你好，用一句话介绍你自己") }

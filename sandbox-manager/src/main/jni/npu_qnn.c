@@ -93,11 +93,23 @@ int npu_qnn_run(const char *native_lib_dir, const char *skel_dir) {
 
     Qnn_DeviceHandle_t dev = NULL;
     rc = api->deviceCreate(NULL, cfgWith, &dev);
-    emit("[qnn] deviceCreate(SOC=87, ARCH=v81) → %d (0x%llx) %s\n",
-         (int)rc, (unsigned long long)rc, rc == 0 ? "<<< 成功 >>>" : "失败");
+    emit("[qnn] deviceCreate(SOC=87, ARCH=v81) → %d (0x%llx) %s device=%p\n",
+         (int)rc, (unsigned long long)rc, rc == 0 ? "<<< 成功 >>>" : "失败", dev);
     if (rc != 0) {
         rc = api->deviceCreate(NULL, cfgNone, &dev2);
-        emit("[qnn] deviceCreate(无配置) → %d (0x%llx)\n", (int)rc, (unsigned long long)rc);
+        emit("[qnn] deviceCreate(无配置) → %d (0x%llx) device=%p\n", (int)rc, (unsigned long long)rc, dev2);
+        if (rc == 0) dev = dev2;
+    }
+
+    /* 必须释放：QNN 的 HTP 设备独占 DSP 会话，
+     * 不释放会让后续 Genie 里的 deviceCreate 一直阻塞（实测 RSS 停在 134MB 不涨）。 */
+    if (dev && api->deviceFree) {
+        Qnn_ErrorHandle_t fr = api->deviceFree(dev);
+        emit("[qnn] deviceFree → %d\n", (int)fr);
+    }
+    if (be && api->backendFree) {
+        Qnn_ErrorHandle_t fr = api->backendFree(be);
+        emit("[qnn] backendFree → %d\n", (int)fr);
     }
     return (int)rc;
 }
