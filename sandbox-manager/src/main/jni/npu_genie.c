@@ -14,6 +14,7 @@
 #include <stdarg.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <time.h>
 
 static char g_out[65536];
 static void emit(const char *fmt, ...) {
@@ -35,8 +36,18 @@ typedef status_t (*dlg_create_fn)(cfg_h, dlg_h *);
 typedef status_t (*dlg_query_fn)(dlg_h, const char *, int, query_cb, const void *);
 typedef status_t (*dlg_free_fn)(dlg_h);
 
+static int  g_tokens;
+static long g_first_ms, g_last_ms;
+static long now_ms(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static void on_token(const char *text, int code, const void *ud) {
     (void)ud;
+    if (g_tokens == 0) g_first_ms = now_ms();
+    g_last_ms = now_ms();
+    g_tokens++;
     /* code: 0=COMPLETE 1=BEGIN 2=CONTINUE 3=END 4=ABORT 5=REWIND 6=RESUME */
     if (text && *text) emit("%s", text);
     (void)code;
@@ -79,9 +90,17 @@ static int genie_run(const char *cfg_json_path, const char *prompt) {
     emit("[genie] GenieDialog_create → %d (dlg=%p)\n", st, dlg);
     if (st != 0 || !dlg) { if (c_free) c_free(cfg); return -7; }
 
+    g_tokens = 0;
     emit("[genie] === 生成开始 ===\n");
-    st = d_query(dlg, prompt, 1 /* GENIE_DIALOG_SENTENCE_BEGIN */, on_token, NULL);
-    emit("\n[genie] GenieDialog_query → %d\n", st);
+    long t0 = now_ms();
+    /* 单轮查询用 GENIE_DIALOG_SENTENCE_COMPLETE(=0)；
+     * SENTENCE_BEGIN(=1) 表示"接着上一句"，单独用不会触发生成。 */
+    st = d_query(dlg, prompt, 0, on_token, NULL);
+    long t1 = now_ms();
+    emit("\n[genie] GenieDialog_query → %d  回调 %d 次  总耗时 %ld ms\n", st, g_tokens, t1 - t0);
+    if (g_tokens > 1)
+        emit("[genie] 首字 %ld ms，解码 %.1f char/s\n", g_first_ms - t0,
+             (g_tokens - 1) * 1000.0 / (double)(g_last_ms - g_first_ms > 0 ? g_last_ms - g_first_ms : 1));
 
     if (d_free) d_free(dlg);
     if (c_free) c_free(cfg);
