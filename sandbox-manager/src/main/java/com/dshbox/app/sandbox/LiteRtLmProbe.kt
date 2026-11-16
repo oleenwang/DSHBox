@@ -19,17 +19,23 @@ object LiteRtLmProbe {
     private const val MAX_TOKENS = 64
     private const val MAX_NUM_TOKENS = 2048
 
+    private const val DIR = "/sdcard/Download"
+
     fun run(ctx: Context) {
-        val f = File(MODEL)
-        Log.i(TAG, "model=$MODEL exists=${f.isFile} size=${if (f.isFile) f.length() else 0}")
-        if (!f.isFile || f.length() < 1024 * 1024) {
-            Log.w(TAG, "model missing/too small — skip inference probe")
-            return
-        }
+        val models = runCatching {
+            File(DIR).listFiles { f -> f.isFile && f.name.endsWith(".litertlm") && f.length() > 50L * 1024 * 1024 }
+                ?.sortedBy { it.length() }
+        }.getOrNull().orEmpty()
+        Log.i(TAG, "found ${models.size} model(s) in $DIR")
+        models.forEach { Log.i(TAG, "  candidate: ${it.name} ${it.length() / 1_000_000} MB") }
+        if (models.isEmpty()) { Log.w(TAG, "no model — skip"); return }
         val app = ctx.applicationContext
         Thread {
-            runCatching { probe(app, f) }
-                .onFailure { Log.e(TAG, "probe fatal: ${it}", it) }
+            for (m in models) {
+                Log.i(TAG, "===== trying ${m.name} =====")
+                runCatching { probe(app, m) }
+                    .onFailure { Log.e(TAG, "probe fatal for ${m.name}: ${it.cause ?: it}") }
+            }
         }.apply { name = "lrtlm-probe"; start() }
     }
 
