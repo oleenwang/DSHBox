@@ -82,14 +82,23 @@ object LiteRtLmProbe {
                 it.name == "sendMessage" && it.parameterTypes.size == 2 &&
                     it.parameterTypes[0] == String::class.java && Map::class.java.isAssignableFrom(it.parameterTypes[1])
             }
-            val t = System.nanoTime()
-            val msg = send.invoke(conv, prompt, emptyMap<String, Any>())
-            val inferMs = (System.nanoTime() - t) / 1_000_000
-            val text = runCatching { msg.javaClass.getMethod("getText").invoke(msg) as String }
-                .getOrElse { msg.toString() }
+            // 冷调用（含 QNN 图编译等一次性开销）
+            val tc = System.nanoTime()
+            val cold = send.invoke(conv, prompt, emptyMap<String, Any>())
+            val coldMs = (System.nanoTime() - tc) / 1_000_000
+            val coldText = runCatching { cold.javaClass.getMethod("getText").invoke(cold) as String }
+                .getOrElse { cold.toString() }
+            // 暖调用（同一 Conversation 再推理一次）——这才是可比口径
+            val tw = System.nanoTime()
+            val warm = send.invoke(conv, prompt, emptyMap<String, Any>())
+            val warmMs = (System.nanoTime() - tw) / 1_000_000
+            val warmText = runCatching { warm.javaClass.getMethod("getText").invoke(warm) as String }
+                .getOrElse { warm.toString() }
             runCatching { engCls.getMethod("close").invoke(eng) }
-            Log.i(TAG, "AB[$backend] infer=$inferMs ms")
-            text
+            Log.i(TAG, "AB[$backend] cold=${coldMs}ms warm=${warmMs}ms")
+            Log.i(TAG, "AB[$backend] coldText=$coldText")
+            Log.i(TAG, "AB[$backend] warmText=$warmText")
+            warmText
         }.onFailure { Log.e(TAG, "AB[$backend] failed: ${it.cause ?: it}") }.getOrNull()
     }
 
