@@ -57,6 +57,13 @@ object LiteRtLmProbe {
 
     private fun runBackend(ctx: Context, model: File, backend: String, prompt: String): String? {
         val libDir = ctx.applicationInfo.nativeLibraryDir
+        // 官方要求：NPU 后端的 skel 需经 FastRPC 从 ADSP_LIBRARY_PATH 找到；
+        // 仅传 nativeLibraryDir 给 Backend.NPU 并不等价，这里显式设置进程环境变量。
+        runCatching { android.system.Os.setenv("ADSP_LIBRARY_PATH", libDir, true) }
+            .onFailure { Log.w(TAG, "setenv ADSP_LIBRARY_PATH failed: $it") }
+        runCatching { android.system.Os.setenv("LD_LIBRARY_PATH", libDir, true) }
+            .onFailure { Log.w(TAG, "setenv LD_LIBRARY_PATH failed: $it") }
+        Log.i(TAG, "env ADSP_LIBRARY_PATH=$libDir")
         return runCatching {
             val backendCls = Class.forName("com.google.ai.edge.litertlm.Backend")
             val cfgCls = Class.forName("com.google.ai.edge.litertlm.EngineConfig")
@@ -70,9 +77,17 @@ object LiteRtLmProbe {
                     .getOrElse { b.getDeclaredConstructor().newInstance() }
             }
             Log.i(TAG, "AB[$backend] backend=$be")
-            val cfg = cfgCls
-                .getConstructor(String::class.java, backendCls, backendCls, backendCls, Integer::class.java)
-                .newInstance(model.absolutePath, be, null, null, Integer.valueOf(MAX_NUM_TOKENS))
+            val cfg = runCatching {
+                cfgCls.getConstructor(
+                    String::class.java, backendCls, backendCls, backendCls,
+                    Integer::class.java, Integer::class.java, String::class.java,
+                ).newInstance(model.absolutePath, be, null, null,
+                    Integer.valueOf(MAX_NUM_TOKENS), null, ctx.cacheDir.absolutePath)
+            }.recoverCatching {
+                cfgCls
+                    .getConstructor(String::class.java, backendCls, backendCls, backendCls, Integer::class.java)
+                    .newInstance(model.absolutePath, be, null, null, Integer.valueOf(MAX_NUM_TOKENS))
+            }.getOrThrow()
             val eng = engCls.getConstructor(cfgCls).newInstance(cfg)
             engCls.getMethod("initialize").invoke(eng)
             val convCfgCls = Class.forName("com.google.ai.edge.litertlm.ConversationConfig")
