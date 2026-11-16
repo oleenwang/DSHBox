@@ -12,7 +12,7 @@ import java.io.File
 /**
  * 外部应用调用三路径：ACTION_VIEW / ACTION_EDIT / ACTION_SEND。
  *
- * - content URI 经 FileProvider（Manifest 注册 `com.dshbox.app.fileprovider`，
+ * - content URI 经 FileProvider（Manifest 注册 `com.dshbox.app.probe.fileprovider`，
  *   res/xml/file_paths.xml 四根精确 files-path 最小授权）；
  * - MIME 用「扩展名 + 魔数」双重判定（[mimeFor]），未知给 application/octet-stream；
  * - 无应用响应 → [openView] 返回 false，调用方降级引导「导出后打开」；
@@ -23,7 +23,7 @@ import java.io.File
 object ExternalOpener {
 
     /** Manifest 中注册的 FileProvider authority 后缀。 */
-    const val FILE_PROVIDER_AUTHORITY = "com.dshbox.app.fileprovider"
+    const val FILE_PROVIDER_AUTHORITY = "com.dshbox.app.probe.fileprovider"
 
     /** 生成 content URI；路径未在 file_paths.xml 声明（如 legacy debian 根）时返回 null。 */
     fun contentUri(context: Context, file: File): Uri? = runCatching {

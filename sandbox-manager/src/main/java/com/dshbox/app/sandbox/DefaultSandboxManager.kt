@@ -200,6 +200,7 @@ class DefaultSandboxManager(
     }
 
     override suspend fun startSandbox() = lifecycleMutex.withLock {
+        com.dshbox.app.sandbox.NativeAccelerationProbe.log()
         if (_sandboxState.value == SandboxState.RUNNING) return@withLock
         _sandboxState.value = SandboxState.STARTING
         try {

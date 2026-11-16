@@ -102,7 +102,7 @@ internal enum class UploadPickRoot { WORKSPACE, SHARE }
  * 同理绑定到公共存储 `DSHBox`。`AndroidManifest.xml` 的 FileProvider 已声明
  * `user_data`（`files-path user-data/`）与 `share_area` / `share_mounts`
  * （`external-path`），因此两个根下的文件都能**直接**铸成
- * `content://com.dshbox.app.fileprovider/…` 交给 WebView —— 零清单改动、零新增 Provider。
+ * `content://com.dshbox.app.probe.fileprovider/…` 交给 WebView —— 零清单改动、零新增 Provider。
  *
  * 又因为 WebView 与 FileProvider 同进程同 UID，`exported=false` 不会造成读取障碍。
  * 但**同 UID 不等于读得到**：content URI 的读取资格仍需显式授予，故 [mintUris]

@@ -44,7 +44,7 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
     }
 
     defaultConfig {
-        applicationId = "com.dshbox.app"
+        applicationId = "com.dshbox.app.probe"
         minSdk = 29
         targetSdk = 36
         // 多语言版本：联合国六语 + 语言选择器 + 硬编码清零 + 布局恒 LTR + i18n 门禁。
