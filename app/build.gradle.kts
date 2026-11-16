@@ -100,6 +100,19 @@ extensions.configure<com.android.build.api.dsl.ApplicationExtension> {
     }
     packaging {
         jniLibs.useLegacyPackaging = true
+        // QNN AAR 解压后约 200 MB，且含 v68..v79 等多个 HTP 版本的 Skel。
+        // 本机是 HTP v81，其余版本与 GPU/Dsp 预编译库不必进包。
+        jniLibs.excludes.addAll(
+            listOf(
+                "**/libQnnHtpV68Skel.so", "**/libQnnHtpV68Stub.so",
+                "**/libQnnHtpV69Skel.so", "**/libQnnHtpV69Stub.so",
+                "**/libQnnHtpV73Skel.so", "**/libQnnHtpV73Stub.so",
+                "**/libQnnHtpV75Skel.so", "**/libQnnHtpV75Stub.so",
+                "**/libQnnHtpV79Skel.so", "**/libQnnHtpV79Stub.so",
+                "**/libQnnDsp.so", "**/libQnnDspV66Skel.so", "**/libQnnDspV66Stub.so",
+                "**/libQnnGpu.so",
+            ),
+        )
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
         // BouncyCastle（bcprov/bcutil/bcpg 三个 jar 各自带一份同名文件）会在这里撞车：
         // "3 files found with path 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'"，
@@ -136,6 +149,10 @@ dependencies {
     // 局域网访问页的二维码生成（version catalog 既有条目，remote-connection
     // 亦使用同一依赖做扫码解码——此处仅为编译期可见性，非新增外部依赖）。
     implementation(libs.zxing.core)
+    // 本地加速：QNN HTP(NPU) 运行时 + LiteRT delegate。AAR 内含 libQnnHtp.so /
+    // libQnnSystem.so 与 v68..v81 的 Skel/Stub（含本机 SM8850 所需 v81）。
+    implementation("com.qualcomm.qti:qnn-runtime:2.51.0")
+    implementation("com.qualcomm.qti:qnn-litert-delegate:2.51.0")
 
     implementation(libs.androidx.core.ktx)
     // 应用内语言切换（AppCompatDelegate.setApplicationLocales；
