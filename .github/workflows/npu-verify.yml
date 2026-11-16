@@ -45,5 +45,71 @@ jobs:
           :npu-runtime:testDebugUnitTest
           --stacktrace
 
+      - name: Assert unit tests actually ran
+        run: |
+          echo "=== 测试报告 ==="
+          ls -la npu-runtime/build/test-results/testDebugUnitTest/ || true
+          python3 - <<'EOF'
+          import glob, sys, xml.etree.ElementTree as ET
+          files = glob.glob('npu-runtime/build/test-results/testDebugUnitTest/*.xml')
+          if not files:
+              print('::error::找不到测试报告 XML —— 单测根本没跑')
+              sys.exit(1)
+          total = fail = skip = 0
+          for f in files:
+              r = ET.parse(f).getroot()
+              total += int(r.get('tests', 0))
+              fail += int(r.get('failures', 0)) + int(r.get('errors', 0))
+              skip += int(r.get('skipped', 0))
+          print(f'tests={total} failures={fail} skipped={skip}')
+          if total == 0:
+              print('::error::测试用例数为 0 —— 任务是空跑')
+              sys.exit(1)
+          if fail:
+              print('::error::存在失败的测试')
+              sys.exit(1)
+          EOF
+
       - name: Assemble app debug APK (includes npu-runtime)
         run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Assert native lib is packaged in APK
+        run: |
+          APK=$(find app/build/outputs/apk -name '*.apk' | head -1)
+          echo "APK=$APK"
+          unzip -l "$APK" | grep -E 'libnpu-genie\.so' || {
+            echo '::error::libnpu-genie.so 没有被打进 APK'
+            exit 1
+          }
+          # 16 KB page 对齐是 Android 15+ 的硬要求，读 ELF 的 LOAD 段对齐值。
+          unzip -o "$APK" 'lib/arm64-v8a/libnpu-genie.so' -d /tmp/apkx >/dev/null
+          python3 - <<'EOF'
+          import struct, sys
+          p='/tmp/apkx/lib/arm64-v8a/libnpu-genie.so'
+          d=open(p,'rb').read()
+          if d[:4] != b'\x7fELF':
+              print('::error::不是 ELF'); sys.exit(1)
+          is64 = d[4]==2
+          e_phoff = struct.unpack_from('<Q', d, 0x20)[0] if is64 else struct.unpack_from('<I', d, 0x1c)[0]
+          e_phentsize = struct.unpack_from('<H', d, 0x36 if is64 else 0x2a)[0]
+          e_phnum = struct.unpack_from('<H', d, 0x38 if is64 else 0x2c)[0]
+          aligns=set()
+          for i in range(e_phnum):
+              off = e_phoff + i*e_phentsize
+              p_type = struct.unpack_from('<I', d, off)[0]
+              if p_type != 1:  # PT_LOAD
+                  continue
+              # p_align 是 Elf64_Phdr 的最后一个字段
+              if is64:
+                  p_align = struct.unpack_from('<Q', d, off+0x30)[0]
+              else:
+                  p_align = struct.unpack_from('<I', d, off+0x1c)[0]
+              aligns.add(p_align)
+          print('PT_LOAD p_align =', sorted(aligns))
+          if not aligns:
+              print('::error::没有 PT_LOAD 段'); sys.exit(1)
+          if max(aligns) < 16384:
+              print('::error::未按 16 KB 对齐，Android 15+ 设备上 dlopen 会失败')
+              sys.exit(1)
+          print('16 KB 对齐检查通过')
+          EOF
