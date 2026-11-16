@@ -149,10 +149,11 @@ dependencies {
     // 局域网访问页的二维码生成（version catalog 既有条目，remote-connection
     // 亦使用同一依赖做扫码解码——此处仅为编译期可见性，非新增外部依赖）。
     implementation(libs.zxing.core)
-    // 本地加速：QNN HTP(NPU) 运行时 + LiteRT delegate。AAR 内含 libQnnHtp.so /
-    // libQnnSystem.so 与 v68..v81 的 Skel/Stub（含本机 SM8850 所需 v81）。
+    // 本地加速：LiteRT-LM（Google 官方端侧 LLM 运行时，含 Backend.NPU）
+    // + Qualcomm NPU 运行时插件。QNN 基础库与 HTP v81 skel 由 qnn-runtime 提供。
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
+    implementation("com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.3.2")
     implementation("com.qualcomm.qti:qnn-runtime:2.51.0")
-    implementation("com.qualcomm.qti:qnn-litert-delegate:2.51.0")
 
     implementation(libs.androidx.core.ktx)
     // 应用内语言切换（AppCompatDelegate.setApplicationLocales；
