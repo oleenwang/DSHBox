@@ -61,6 +61,12 @@ object LiteRtLmProbe {
             cfgCls.getConstructor(String::class.java, backendCls).newInstance(model.absolutePath, npu)
         }.onFailure { Log.e(TAG, "EngineConfig failed: ${it.cause ?: it}") }.getOrNull()
         Log.i(TAG, "EngineConfig=${cfg != null}")
+        if (cfg != null) {
+            for (getter in listOf("getMaxNumTokens", "getMaxNumImages", "getModelPath", "getBackend", "getCacheDir")) {
+                val v = runCatching { cfgCls.getMethod(getter).invoke(cfg) }.getOrNull()
+                Log.i(TAG, "cfg.$getter=$v")
+            }
+        }
         if (cfg == null || npu == null) return
 
         // 3) Engine(config)
@@ -106,22 +112,21 @@ object LiteRtLmProbe {
                     convCls.methods.filter { it.name.startsWith("send") }.joinToString { it.name })
                 return
             }
-            val start = System.nanoTime()
-            val msg = runCatching { send.invoke(conv, PROMPT, emptyMap<String, Any>()) }
-                .onFailure { Log.e(TAG, "sendMessage threw: ${it.cause ?: it}") }.getOrNull()
-            val ms = (System.nanoTime() - start) / 1_000_000
-            Log.i(TAG, "sendMessage -> ${msg != null} in $ms ms")
-            if (msg != null) {
-                val text = runCatching { msg.javaClass.getMethod("getText").invoke(msg) }.getOrNull()
-                    ?: msg.toString()
-                Log.i(TAG, "NPU RESULT[$ms ms]: $text")
-                runCatching {
-                    val bi = msg.javaClass.getMethod("getBenchmarkInfo")?.let { null }
+            for (p in listOf("Hi", PROMPT)) {
+                val start = System.nanoTime()
+                val got = runCatching { send.invoke(conv, p, emptyMap<String, Any>()) }
+                    .onFailure { Log.e(TAG, "send(\"$p\") threw: ${it.cause ?: it}") }
+                    .getOrNull()
+                val el = (System.nanoTime() - start) / 1_000_000
+                Log.i(TAG, "send(prompt=\"$p\") -> ${got != null} in $el ms")
+                if (got != null) {
+                    val text = runCatching { got.javaClass.getMethod("getText").invoke(got) }.getOrNull() ?: got.toString()
+                    Log.i(TAG, "NPU RESULT[$el ms]: $text")
                 }
-                runCatching {
-                    val biM = convCls.getMethod("getBenchmarkInfo")
-                    Log.i(TAG, "benchmarkInfo=" + biM.invoke(conv))
-                }
+            }
+            runCatching {
+                val biM = convCls.getMethod("getBenchmarkInfo")
+                Log.i(TAG, "benchmarkInfo=" + biM.invoke(conv))
             }
         } finally {
             runCatching { engCls.getMethod("close").invoke(engine) }
