@@ -25,11 +25,9 @@ object NpuReachabilityProbe {
     private const val TAG = "NpuReachProbe"
     private const val LIB = "npu-probe"
 
+    /** 由 libnpu-probe.so 提供实现（见 npu_probe_jni.c）。 */
     @Suppress("unused")
-    private external fun npu_probe_run(): Int
-
-    @Suppress("unused")
-    private external fun npu_probe_result(): String
+    private external fun runNative(): String
 
     fun run() {
         runCatching {
@@ -48,10 +46,8 @@ object NpuReachabilityProbe {
                 "uid=${android.os.Process.myUid()}",
         )
 
-        val out = runCatching {
-            npu_probe_run()
-            npu_probe_result()
-        }.onFailure { Log.e(TAG, "native probe failed: ${it.message}") }
+        val out = runCatching { runNative() }
+            .onFailure { Log.e(TAG, "native probe failed: ${it.message}") }
             .getOrElse { return }
 
         Log.i(TAG, "=== native probe output ===")
