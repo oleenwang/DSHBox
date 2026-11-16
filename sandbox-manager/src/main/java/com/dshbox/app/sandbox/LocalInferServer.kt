@@ -54,16 +54,27 @@ object LocalInferServer {
 
     private fun serve(ctx: Context) {
         val addr = InetAddress.getByName("127.0.0.1")
-        val ss = try {
-            ServerSocket(PORT, 50, addr)
-        } catch (t: Throwable) {
-            Log.e(TAG, "bind failed: $t"); return
-        }
-        Log.i(TAG, "listening on http://127.0.0.1:$PORT/v1")
+        // 外层守护循环：任何异常都不许让监听永久消失（此前线程一死，ServerSocket 被 GC 回收）。
         while (true) {
-            val s = try { ss.accept() } catch (t: Throwable) { Log.w(TAG, "accept: $t"); continue }
-            Thread { runCatching { handle(ctx, s) }.onFailure { Log.e(TAG, "handle: $it") } }
-                .apply { isDaemon = true; start() }
+            var ss: ServerSocket? = null
+            try {
+                ss = ServerSocket(PORT, 50, addr)
+                Log.i(TAG, "listening on http://127.0.0.1:$PORT/v1")
+                while (true) {
+                    // 单线程串行处理：本地单用户场景足够，且避免每个请求建线程
+                    // （模型常驻约 1.8 GB，线程创建失败会让整个监听崩掉）。
+                    try {
+                        ss.accept().use { s -> handle(ctx, s) }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "accept/handle: ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "serve loop died, rebinding in 2s: $t")
+            } finally {
+                runCatching { ss?.close() }
+            }
+            try { Thread.sleep(2000) } catch (ie: InterruptedException) { return }
         }
     }
 
