@@ -40,6 +40,60 @@ object LiteRtLmProbe {
     }
 
     private fun probe(ctx: Context, model: File) {
+        abTest(ctx, model)
+    }
+
+    /** 同一提示词分别用 NPU / CPU 后端跑，比较耗时 —— 用于判定 NPU 是否真的在算。 */
+    private fun abTest(ctx: Context, model: File) {
+        if (model.name.contains("_mm_")) { Log.i(TAG, "skip broken mm model ${model.name}"); return }
+        val prompt = "说一句话"
+        for (tag in listOf("NPU", "CPU")) {
+            val t0 = System.nanoTime()
+            val r = runBackend(ctx, model, tag, prompt)
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            Log.i(TAG, "AB[$tag] ${model.name} total=$ms ms result=${r ?: "<fail>"}")
+        }
+    }
+
+    private fun runBackend(ctx: Context, model: File, backend: String, prompt: String): String? {
+        val libDir = ctx.applicationInfo.nativeLibraryDir
+        return runCatching {
+            val backendCls = Class.forName("com.google.ai.edge.litertlm.Backend")
+            val cfgCls = Class.forName("com.google.ai.edge.litertlm.EngineConfig")
+            val engCls = Class.forName("com.google.ai.edge.litertlm.Engine")
+            val be = if (backend == "NPU") {
+                Class.forName("com.google.ai.edge.litertlm.Backend\$NPU")
+                    .getConstructor(String::class.java).newInstance(libDir)
+            } else {
+                val b = Class.forName("com.google.ai.edge.litertlm.Backend\$CPU")
+                runCatching { b.getConstructor(Integer::class.java).newInstance(Integer.valueOf(4)) }
+                    .getOrElse { b.getDeclaredConstructor().newInstance() }
+            }
+            Log.i(TAG, "AB[$backend] backend=$be")
+            val cfg = cfgCls
+                .getConstructor(String::class.java, backendCls, backendCls, backendCls, Integer::class.java)
+                .newInstance(model.absolutePath, be, null, null, Integer.valueOf(MAX_NUM_TOKENS))
+            val eng = engCls.getConstructor(cfgCls).newInstance(cfg)
+            engCls.getMethod("initialize").invoke(eng)
+            val convCfgCls = Class.forName("com.google.ai.edge.litertlm.ConversationConfig")
+            val conv = engCls.methods.first { it.name == "createConversation" && it.parameterTypes.size == 1 }
+                .invoke(eng, convCfgCls.getDeclaredConstructor().newInstance())
+            val send = conv.javaClass.methods.first {
+                it.name == "sendMessage" && it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0] == String::class.java && Map::class.java.isAssignableFrom(it.parameterTypes[1])
+            }
+            val t = System.nanoTime()
+            val msg = send.invoke(conv, prompt, emptyMap<String, Any>())
+            val inferMs = (System.nanoTime() - t) / 1_000_000
+            val text = runCatching { msg.javaClass.getMethod("getText").invoke(msg) as String }
+                .getOrElse { msg.toString() }
+            runCatching { engCls.getMethod("close").invoke(eng) }
+            Log.i(TAG, "AB[$backend] infer=$inferMs ms")
+            text
+        }.onFailure { Log.e(TAG, "AB[$backend] failed: ${it.cause ?: it}") }.getOrNull()
+    }
+
+    private fun legacyProbe(ctx: Context, model: File) {
         val libDir = ctx.applicationInfo.nativeLibraryDir
         Log.i(TAG, "nativeLibraryDir=$libDir")
 
