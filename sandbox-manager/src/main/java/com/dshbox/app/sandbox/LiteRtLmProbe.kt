@@ -17,6 +17,7 @@ object LiteRtLmProbe {
     private const val MODEL = "/sdcard/Download/qwen35_mm_q8_ekv2048.litertlm"
     private const val PROMPT = "用一句话说明端侧推理的好处。"
     private const val MAX_TOKENS = 64
+    private const val MAX_NUM_TOKENS = 2048
 
     fun run(ctx: Context) {
         val f = File(MODEL)
@@ -47,8 +48,16 @@ object LiteRtLmProbe {
         }.onFailure { Log.e(TAG, "Backend.NPU failed: ${it.cause ?: it}") }.getOrNull()
         Log.i(TAG, "Backend.NPU=${npu != null}")
 
-        // 2) EngineConfig(modelPath, backend)（@JvmOverloads 的 2 参重载）
+        // 2) EngineConfig(modelPath, backend, vision, audio, maxNumTokens)
+        //    必须显式给 maxNumTokens：2 参重载沿用默认值（极小），会让任何提示词都超限
+        //    报 "Exceeding the maximum number of tokens allowed: 17 >= 3"。
+        val intCls = Integer::class.java
         val cfg = runCatching {
+            cfgCls
+                .getConstructor(String::class.java, backendCls, backendCls, backendCls, intCls)
+                .newInstance(model.absolutePath, npu, null, null, Integer.valueOf(MAX_NUM_TOKENS))
+        }.recoverCatching {
+            Log.w(TAG, "5-arg EngineConfig failed (${it.cause ?: it}), fallback to 2-arg")
             cfgCls.getConstructor(String::class.java, backendCls).newInstance(model.absolutePath, npu)
         }.onFailure { Log.e(TAG, "EngineConfig failed: ${it.cause ?: it}") }.getOrNull()
         Log.i(TAG, "EngineConfig=${cfg != null}")
@@ -106,6 +115,13 @@ object LiteRtLmProbe {
                 val text = runCatching { msg.javaClass.getMethod("getText").invoke(msg) }.getOrNull()
                     ?: msg.toString()
                 Log.i(TAG, "NPU RESULT[$ms ms]: $text")
+                runCatching {
+                    val bi = msg.javaClass.getMethod("getBenchmarkInfo")?.let { null }
+                }
+                runCatching {
+                    val biM = convCls.getMethod("getBenchmarkInfo")
+                    Log.i(TAG, "benchmarkInfo=" + biM.invoke(conv))
+                }
             }
         } finally {
             runCatching { engCls.getMethod("close").invoke(engine) }
