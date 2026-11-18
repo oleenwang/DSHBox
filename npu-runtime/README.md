@@ -41,10 +41,25 @@ logcat 一条 fastrpc 日志都没有」。`nativeInit()` 里已经自动设置�
 
 ## 构建
 
-原生库（100 MB+）**不进仓库**，用脚本产出：
+原生库（100 MB+）**不进仓库**，两条路，按需要选一条。
+
+### A. 直接用发布好的预编译库（推荐，不用本地编译）
 
 ```bash
-bash npu-runtime/scripts/build-llama-htp.sh
+./gradlew :npu-runtime:assembleDebug -Pdshbox.npuLibs
+```
+
+校验值钉在 `npu-runtime/npu-libs.lock`，下载后逐字节校验，**不通过就不落盘**。
+不加 `-Pdshbox.npuLibs` 时完全不下载 —— 模块照常编译，`NpuLlama.isAvailable()`
+返回 false，App 正常降级。
+
+### B. 自己编
+
+```bash
+bash npu-runtime/scripts/build-llama-htp.sh            # 编译到 jniLibs/
+bash npu-runtime/scripts/package-libs.sh \
+     --in npu-runtime/src/main/jniLibs/arm64-v8a --out dist \
+     --ref "$(cat npu-runtime/src/main/jniLibs/arm64-v8a/LLAMACPP_COMMIT)"
 ```
 
 脚本用 llama.cpp 官方 CI 的配方：在
@@ -52,7 +67,13 @@ bash npu-runtime/scripts/build-llama-htp.sh
 arm64-android-snapdragon-release`。**不要自己拼 `HEXAGON_SDK_ROOT`** ——
 SDK 的 `hexagon_fun.cmake` 会因变量缺失直接 FATAL_ERROR。
 
-体积大 + skel 是 Qualcomm 专有二进制，是不入库的两个理由。
+自己编完想发给别人：跑一次
+`.github/workflows/npu-libs-release.yml`（手动触发即可），它会编译 → 打确定性
+zip → 发 Release 附件 → 用 Gradle 任务做「下载 / 校验 / 落盘 / 进 AAR」的端到端验证。
+跑完在 workflow summary 里会打印要抄回 `npu-libs.lock` 的那几行。
+
+体积大 + skel 是 Qualcomm 专有二进制，是**不进仓库**的两个理由；
+发布成 Release 附件而不是塞进源码树，也是为了让许可边界清楚。
 
 ## 用法
 

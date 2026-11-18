@@ -1,2 +1,7 @@
 # 原生库由 scripts/build-llama-htp.sh 产出，不入库（100 MB+ 且含 Qualcomm 二进制）
 npu-runtime/src/main/jniLibs/arm64-v8a/*.so
+# downloadNpuLibs 的幂等标记与编译来源记录，都是本地产物
+npu-runtime/src/main/jniLibs/arm64-v8a/.installed.sha256
+npu-runtime/src/main/jniLibs/arm64-v8a/LLAMACPP_COMMIT
+# package-libs.sh 的输出目录
+/dist/
