@@ -57,7 +57,10 @@ echo "== 1/4 在官方容器里编译 llama.cpp（首次会拉约 3 GB 镜像）
   # 在 App 的 namespace 里解不开（即使声明了 uses-native-library 也不稳）。
   # 我们只用 HTP。
   cmake --preset arm64-android-snapdragon-release -B build -DGGML_OPENCL=OFF
-  cmake --build build -j"$(nproc)" --target llama ggml
+  # 不要收窄 target：DSP 侧 skel（libggml-htp-v*.so）不是 `llama`/`ggml` 这两个
+  # target 的产物，加了 --target 就编不出来，表现为「host 库齐全、打包时缺 skel」。
+  # 实测踩过（2026-11-18 CI 第一次跑，Collect 里没有 libggml-htp-v*.so）。
+  cmake --build build -j"$(nproc)"
   cp build/bin/*.so /io/out/ 2>/dev/null || true
   cp build/ggml/src/ggml-hexagon/*.so /io/out/ 2>/dev/null || true
   cp build/ggml/src/ggml-hexagon/ship/libc++_shared.so /io/out/ 2>/dev/null || true

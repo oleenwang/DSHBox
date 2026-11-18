@@ -6,17 +6,22 @@
 #
 # 怎么更新：
 #   1. 手动触发 npu-libs-release 工作流（或推一个 npu-libs-* tag）
-#   2. 工作流跑完后，它会在 summary 里打印下面这几行
+#   2. 工作流跑完会在 summary 里打印下面这几行
 #   3. 原样抄回本文件
 #
-# 只想要某个 HTP 版本、省约 5 MB：打包时给工作流传 only=v81（按设备改）。
+# 只想要某个 HTP 版本、省约 4 MB：打包时给工作流传 only=v81（按设备改）。
 #
 # 未标定的 sha256 会让 downloadNpuLibs 直接报错停下 —— 这是故意的：
 # 拿一批没校验的库编出 APK，运行时的崩溃比构建失败难查得多。
+#
+# ⚠️ url 现在指向本仓库 fork（oleenwang/DSHBox）的 Release，因为这次发布的资产在那边。
+#    上游合并后请在上游跑一次 npu-libs-release.yml，把 url 改成
+#    https://github.com/WSK-build/DSHBox/releases/download/<tag>/<file>。
+#    完整性由 sha256 保证，url 只是取件位置。
 
-version=npu-libs-v0-UNSET
-file=llama-htp-arm64-v8a-UNSET.zip
-url=
-sha256=
-size=0
-llamacpp=
+version=npu-libs-20261118-ffc87c3
+file=llama-htp-arm64-v8a-ffc87c3.zip
+url=https://github.com/oleenwang/DSHBox/releases/download/npu-libs-20261118-ffc87c3/llama-htp-arm64-v8a-ffc87c3.zip
+sha256=8a326dd447bb280cb1e1e20e51cd2d7f41fe82f7ea863cb15ad58e7f7b20eaa2
+size=21132152
+llamacpp=ffc87c3a7989cb657641a6459a186f303e176af8
