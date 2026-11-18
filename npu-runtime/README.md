@@ -46,12 +46,17 @@ logcat 一条 fastrpc 日志都没有」。`nativeInit()` 里已经自动设置�
 ### A. 直接用发布好的预编译库（推荐，不用本地编译）
 
 ```bash
-./gradlew :npu-runtime:assembleDebug -Pdshbox.npuLibs
+./gradlew :npu-runtime:assembleDebug -Pdshbox.npuLibs   # 走 Gradle 包装
+bash npu-runtime/scripts/fetch-libs.sh                  # 或直接跑脚本，不依赖 Gradle
 ```
 
-校验值钉在 `npu-runtime/npu-libs.lock`，下载后逐字节校验，**不通过就不落盘**。
+校验值钉在 `npu-runtime/npu-libs.lock`，下载后逐字节校验，**不通过就不落盘**；
+解压只取 basename（`unzip -j`，防路径穿越）；已在位则跳过。
 不加 `-Pdshbox.npuLibs` 时完全不下载 —— 模块照常编译，`NpuLlama.isAvailable()`
 返回 false，App 正常降级。
+
+逻辑都在 `scripts/fetch-libs.sh` 里，所以它能在没有 Gradle / 没有 Android SDK 的
+机器上单独验证（含四条失败路径：sha 不符、sha 未标定、URL 404、包内缺 DSP skel）。
 
 ### B. 自己编
 
