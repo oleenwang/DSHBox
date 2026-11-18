@@ -80,6 +80,21 @@ zip → 发 Release 附件 → 用 Gradle 任务做「下载 / 校验 / 落盘 /
 体积大 + skel 是 Qualcomm 专有二进制，是**不进仓库**的两个理由；
 发布成 Release 附件而不是塞进源码树，也是为了让许可边界清楚。
 
+## 推之前先过闸门
+
+```bash
+bash npu-runtime/scripts/prepush-npu.sh
+```
+
+不需要 Gradle、不需要网络，几秒出结果。它覆盖：脚本语法、打包确定性、三条打包失败路径、
+下载的正向/幂等/三条拒绝路径、workflow YAML、**AGP 9 的插件写法**、lock 自洽性。
+
+最后一项是被事故逼出来的：2026-11-18 这个模块因为多 apply 了独立 Kotlin 插件，
+在配置期就 `BUILD FAILED`，而当时验证全押在 CI 上、那个 fork 的 Actions 又被停用，
+于是这个错在公开 PR 里挂了 9 小时 20 分。现在同类错误本地几秒就能拦下。
+
+它**不覆盖** Gradle 配置与 AAR 打包 —— 那两项仍然只有真仓库 CI 能给答案。
+
 ## 用法
 
 ```kotlin
