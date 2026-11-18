@@ -1,0 +1,224 @@
+name: NPU native libs release
+
+# 把 llama.cpp 的 HTP 原生库编出来、打成确定性 zip、发成 Release 附件。
+#
+# 为什么不放在常驻 CI 里：一次产物 100 MB+，编译约 15 分钟，还要拉 3 GB 的
+# snapdragon 容器。日常 PR 只需要 npu-verify.yml 那三条断言（能编过 / 16 KB 对齐 /
+# 不硬链接 libllama），不需要每次重编原生库。
+#
+# 触发：
+#   - 手动 workflow_dispatch（可选只留一个 HTP 版本，省约 5 MB）
+#   - 推 npu-libs-* tag
+#
+# 跑完后 workflow summary 里会打印要抄回 npu-runtime/npu-libs.lock 的那几行。
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: '只保留这些 HTP 版本（逗号分隔，如 v81）。留空 = 全带'
+        required: false
+        default: ''
+      llamacpp:
+        description: 'llama.cpp 分支或提交'
+        required: false
+        default: 'master'
+  push:
+    tags:
+      - 'npu-libs-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: npu-libs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # 官方 snapdragon 镜像是 arm64；x86 runner 要靠 qemu，编译会慢到不可用
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+      zipname: ${{ steps.pack.outputs.zipname }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      size: ${{ steps.pack.outputs.size }}
+      llamacpp: ${{ steps.pack.outputs.llamacpp }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译 HTP 原生库（官方容器）
+        env:
+          LLAMACPP: ${{ inputs.llamacpp }}
+        run: |
+          bash npu-runtime/scripts/build-llama-htp.sh \
+            --out "$RUNNER_TEMP/libs/arm64-v8a" \
+            --llamacpp "${LLAMACPP:-master}"
+
+      - name: 打包（确定性 zip + SHA256SUMS）
+        id: pack
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          REF="$(cat "$RUNNER_TEMP/libs/arm64-v8a/LLAMACPP_COMMIT")"
+          REF7="${REF:0:7}"
+          ARGS=(--in "$RUNNER_TEMP/libs/arm64-v8a" --out dist --ref "$REF")
+          [ -n "${ONLY:-}" ] && ARGS+=(--only "$ONLY")
+          bash npu-runtime/scripts/package-libs.sh "${ARGS[@]}"
+          ZIP="$(ls dist/*.zip | head -1)"
+          SHA="$(cut -d' ' -f1 dist/SHA256SUMS.txt)"
+          SIZE="$(stat -c %s "$ZIP")"
+          VERSION="npu-libs-$(date -u +%Y%m%d)-${REF7}"
+          {
+            echo "version=$VERSION"
+            echo "zipname=$(basename "$ZIP")"
+            echo "sha256=$SHA"
+            echo "size=$SIZE"
+            echo "llamacpp=$REF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 产物"
+            echo ""
+            echo '```'
+            cat dist/SHA256SUMS.txt
+            echo '```'
+            echo ""
+            echo "抄回 \`npu-runtime/npu-libs.lock\`："
+            echo ""
+            echo '```properties'
+            echo "version=$VERSION"
+            echo "file=$(basename "$ZIP")"
+            echo "url=${{ github.server_url }}/${{ github.repository }}/releases/download/$VERSION/$(basename "$ZIP")"
+            echo "sha256=$SHA"
+            echo "size=$SIZE"
+            echo "llamacpp=$REF"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npu-libs-${{ steps.pack.outputs.llamacpp }}
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npu-libs-${{ needs.build.outputs.llamacpp }}
+          path: dist
+
+      - name: 发 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.version }}
+          name: ${{ needs.build.outputs.version }}
+          body: |
+            llama.cpp HTP 原生库（arm64-v8a / Hexagon DSP）
+
+            | 项 | 值 |
+            |---|---|
+            | llama.cpp 提交 | `${{ needs.build.outputs.llamacpp }}` |
+            | 体积 | ${{ needs.build.outputs.size }} 字节 |
+            | SHA-256 | `${{ needs.build.outputs.sha256 }}` |
+
+            **许可提示**：包内含 `libggml-htp-v*.so`，是 Qualcomm 的 DSP 侧二进制，
+            分发时请遵守其许可；`libllama.so` / `libggml*.so` 来自 llama.cpp（MIT）。
+
+            Gradle 侧校验值见 `npu-runtime/npu-libs.lock`。
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+
+  verify:
+    # 不验证不算发布：这条链要证明「下载 → 校验 → 落盘 → 进 AAR」全通，
+    # 且校验不通过时**一个字节都不落盘**。
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21' }
+
+      - uses: android-actions/setup-android@v3
+        with: { packages: 'platform-tools' }
+
+      - name: SDK + NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          for pkg in "platforms;android-36" "build-tools;36.0.0"; do
+            for try in 1 2 3; do sdkmanager "$pkg" && break; echo "retry $pkg"; sleep 5; done
+          done
+          for try in 1 2 3; do sdkmanager "ndk;27.0.12077973" && break; echo "retry ndk"; sleep 5; done
+
+      - name: 用 Gradle 任务下载并校验
+        env:
+          ZIP_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ needs.build.outputs.version }}/${{ needs.build.outputs.zipname }}
+          SHA: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew tools/*.sh npu-runtime/scripts/*.sh 2>/dev/null || true
+          echo "URL=$ZIP_URL"
+          ./gradlew :npu-runtime:downloadNpuLibs --no-daemon --stacktrace \
+            -Pdshbox.npuLibs=true -Pdshbox.npuLibsUrl="$ZIP_URL" -Pdshbox.npuLibsSha256="$SHA"
+
+      - name: 断言落盘内容
+        run: |
+          set -euo pipefail
+          D=npu-runtime/src/main/jniLibs/arm64-v8a
+          ls -la "$D"
+          for f in libllama.so libggml-hexagon.so; do
+            [ -s "$D/$f" ] || { echo "::error::缺 $f"; exit 1; }
+          done
+          ls "$D"/libggml-htp-v*.so >/dev/null 2>&1 || { echo "::error::缺 DSP skel"; exit 1; }
+          [ -s "$D/.installed.sha256" ] || { echo "::error::没有标记文件"; exit 1; }
+
+      - name: 编进 AAR（证明真的会被打进产物）
+        run: |
+          set -euo pipefail
+          ./gradlew :npu-runtime:assembleDebug --no-daemon --stacktrace
+          AAR="$(ls npu-runtime/build/outputs/aar/*.aar | head -1)"
+          echo "aar=$AAR"
+          unzip -l "$AAR" | grep -E 'jni/arm64-v8a/lib(llama|ggml)' || {
+            echo "::error::AAR 里没有原生库"; exit 1; }
+          unzip -l "$AAR" | grep -q 'jni/arm64-v8a/libggml-htp-v' || {
+            echo "::error::AAR 里没有 DSP skel"; exit 1; }
+
+      - name: 幂等（第二次应跳过下载）
+        env:
+          ZIP_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ needs.build.outputs.version }}/${{ needs.build.outputs.zipname }}
+          SHA: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          LOG="$(./gradlew :npu-runtime:downloadNpuLibs --no-daemon \
+            -Pdshbox.npuLibs=true -Pdshbox.npuLibsUrl="$ZIP_URL" -Pdshbox.npuLibsSha256="$SHA" 2>&1)"
+          echo "$LOG" | tail -5
+          echo "$LOG" | grep -q "跳过下载" || { echo "::error::重复执行没有跳过下载"; exit 1; }
+
+      - name: 负向断言（错的 sha256 必须拒绝且不落盘）
+        env:
+          ZIP_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ needs.build.outputs.version }}/${{ needs.build.outputs.zipname }}
+        run: |
+          set -euo pipefail
+          D=npu-runtime/src/main/jniLibs/arm64-v8a
+          rm -rf "$D"
+          BAD="$(printf '0%.0s' $(seq 1 64))"
+          if ./gradlew :npu-runtime:downloadNpuLibs --no-daemon \
+               -Pdshbox.npuLibs=true -Pdshbox.npuLibsUrl="$ZIP_URL" -Pdshbox.npuLibsSha256="$BAD" \
+               > /tmp/bad.log 2>&1; then
+            echo "::error::错误的 sha256 居然通过了"; tail -20 /tmp/bad.log; exit 1
+          fi
+          grep -q "校验失败" /tmp/bad.log || { echo "::error::失败信息不是期望的那条"; tail -20 /tmp/bad.log; exit 1; }
+          if [ -f "$D/libllama.so" ]; then echo "::error::校验失败却落盘了"; exit 1; fi
+          echo "OK：校验不通过时没有落盘"
